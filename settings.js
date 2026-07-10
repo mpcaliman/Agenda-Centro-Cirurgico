@@ -101,7 +101,8 @@ async function renderUsers(body) {
   body.querySelectorAll('[data-toggle]').forEach((b) => {
     b.onclick = async () => {
       const next = b.dataset.status === 'ativo' ? 'inativo' : 'ativo';
-      await supabase.from('profiles').update({ status: next }).eq('id', b.dataset.toggle);
+      const { error } = await supabase.from('profiles').update({ status: next }).eq('id', b.dataset.toggle);
+      if (error) { toast('Erro: ' + error.message, 'error'); return; }
       toast('Situação atualizada.', 'success');
       renderUsers(body);
     };
@@ -190,7 +191,7 @@ function openUserForm(user, body, userRoles = []) {
         toast('Convite enviado com sucesso.', 'success');
       } else {
         // Atualiza perfil + funções diretamente (RLS permite ao gestor).
-        await supabase.from('profiles').update({
+        const { error: upErr } = await supabase.from('profiles').update({
           full_name: form.full_name.value.trim(),
           phone_whatsapp: form.phone_whatsapp.value.trim(),
           registration_type: form.registration_type.value.trim(),
@@ -200,8 +201,11 @@ function openUserForm(user, body, userRoles = []) {
           cnpj: form.cnpj.value.trim(),
           company_responsible: form.company_responsible.value.trim(),
         }).eq('id', user.id);
-        await supabase.from('user_roles').delete().eq('user_id', user.id);
-        await supabase.from('user_roles').insert(selectedRoles.map(role => ({ user_id: user.id, role })));
+        if (upErr) throw new Error(upErr.message);
+        const { error: delErr } = await supabase.from('user_roles').delete().eq('user_id', user.id);
+        if (delErr) throw new Error(delErr.message);
+        const { error: insErr } = await supabase.from('user_roles').insert(selectedRoles.map(role => ({ user_id: user.id, role })));
+        if (insErr) throw new Error(insErr.message);
         toast('Usuário atualizado.', 'success');
       }
       close();
@@ -256,20 +260,36 @@ async function simpleCrud(body, { table, title, columns, fields }) {
       e.preventDefault();
       const payload = { surgical_center_id: center() };
       fields.forEach((f) => {
-        const el = e.target[f.name];
+        // IMPORTANTE: usar form.elements[nome] (e NÃO form[nome]), pois
+        // campos como "name" colidem com propriedades do próprio <form>.
+        const el = e.target.elements[f.name];
+        if (!el) return;
         payload[f.name] = f.type === 'checkbox' ? el.checked
           : f.type === 'number' ? Number(el.value)
-          : el.value;
+          : el.value.trim();
       });
+      // Validação básica de campos obrigatórios (ex.: Nome).
+      const missing = fields.find((f) => f.required && !String(payload[f.name] ?? '').trim());
+      if (missing) { toast('Preencha o campo "' + missing.label + '".', 'error'); return; }
+
       setLoading(true);
       try {
-        if (row) await supabase.from(table).update(payload).eq('id', row.id);
-        else await supabase.from(table).insert(payload);
-        toast('Salvo.', 'success');
+        const res = row
+          ? await supabase.from(table).update(payload).eq('id', row.id).select()
+          : await supabase.from(table).insert(payload).select();
+        if (res.error) { toast('Erro ao salvar: ' + res.error.message, 'error'); return; }
+        if (!res.data || !res.data.length) {
+          toast('Não foi possível salvar (sem permissão de gestor?).', 'error');
+          return;
+        }
+        toast('Salvo com sucesso.', 'success');
         close();
         simpleCrud(body, { table, title, columns, fields });
-      } catch (ex) { toast('Erro: ' + ex.message, 'error'); }
-      finally { setLoading(false); }
+      } catch (ex) {
+        toast('Erro: ' + ex.message, 'error');
+      } finally {
+        setLoading(false);
+      }
     };
   };
 
@@ -280,16 +300,26 @@ async function simpleCrud(body, { table, title, columns, fields }) {
   body.querySelectorAll('[data-del]').forEach((b) => {
     b.onclick = async () => {
       if (!confirm('Excluir este item?')) return;
-      const { error } = await supabase.from(table).delete().eq('id', b.dataset.del);
-      if (error) toast('Não foi possível excluir (pode estar em uso): ' + error.message, 'error');
-      else { toast('Excluído.', 'success'); simpleCrud(body, { table, title, columns, fields }); }
+      setLoading(true);
+      const { data: removed, error } = await supabase.from(table).delete().eq('id', b.dataset.del).select();
+      setLoading(false);
+      if (error) {
+        toast('Não foi possível excluir (pode estar em uso): ' + error.message, 'error');
+      } else if (!removed || !removed.length) {
+        toast('Não foi possível excluir (sem permissão de gestor ou item em uso).', 'error');
+      } else {
+        toast('Excluído.', 'success');
+        simpleCrud(body, { table, title, columns, fields });
+      }
     };
   });
 }
 
 function fieldHtml(f, value) {
   if (f.type === 'checkbox') {
-    return `<label class="chk"><input type="checkbox" name="${f.name}" ${value ? 'checked' : ''}><span>${f.label}</span></label>`;
+    // Em item novo (value indefinido), respeita o padrão do campo (f.default).
+    const checked = value === undefined ? !!f.default : !!value;
+    return `<label class="chk"><input type="checkbox" name="${f.name}" ${checked ? 'checked' : ''}><span>${f.label}</span></label>`;
   }
   if (f.type === 'color') {
     return `<label class="field"><span>${f.label}</span><input type="color" name="${f.name}" value="${value ?? '#3b82f6'}"></label>`;
@@ -305,7 +335,7 @@ const renderRooms = (body) => simpleCrud(body, {
   columns: [{ key: 'name', label: 'Nome' }, { key: 'sort_order', label: 'Ordem' },
     { key: 'active', label: 'Ativa', render: r => r.active ? 'Sim' : 'Não' }],
   fields: [{ name: 'name', label: 'Nome', required: true }, { name: 'description', label: 'Descrição' },
-    { name: 'sort_order', label: 'Ordem', type: 'number' }, { name: 'active', label: 'Ativa', type: 'checkbox' }],
+    { name: 'sort_order', label: 'Ordem', type: 'number' }, { name: 'active', label: 'Ativa', type: 'checkbox', default: true }],
 });
 
 const renderEquipment = (body) => simpleCrud(body, {
@@ -319,14 +349,14 @@ const renderEquipment = (body) => simpleCrud(body, {
     { name: 'name', label: 'Nome', required: true },
     { name: 'description', label: 'Descrição' },
     { name: 'block_simultaneous', label: '🔒 Bloquear agendamentos simultâneos (uso exclusivo)', type: 'checkbox' },
-    { name: 'active', label: 'Ativo', type: 'checkbox' },
+    { name: 'active', label: 'Ativo', type: 'checkbox', default: true },
   ],
 });
 
 const renderAccommodations = (body) => simpleCrud(body, {
   table: 'accommodation_types', title: 'Tipos de acomodação',
   columns: [{ key: 'name', label: 'Nome' }, { key: 'active', label: 'Ativo', render: r => r.active ? 'Sim' : 'Não' }],
-  fields: [{ name: 'name', label: 'Nome', required: true }, { name: 'active', label: 'Ativo', type: 'checkbox' }],
+  fields: [{ name: 'name', label: 'Nome', required: true }, { name: 'active', label: 'Ativo', type: 'checkbox', default: true }],
 });
 
 const renderStatuses = (body) => simpleCrud(body, {
@@ -336,7 +366,7 @@ const renderStatuses = (body) => simpleCrud(body, {
     { key: 'sort_order', label: 'Ordem' }, { key: 'is_default', label: 'Padrão', render: r => r.is_default ? 'Sim' : '' }],
   fields: [{ name: 'name', label: 'Nome', required: true }, { name: 'color', label: 'Cor', type: 'color' },
     { name: 'sort_order', label: 'Ordem', type: 'number' }, { name: 'is_default', label: 'Padrão', type: 'checkbox' },
-    { name: 'active', label: 'Ativo', type: 'checkbox' }],
+    { name: 'active', label: 'Ativo', type: 'checkbox', default: true }],
 });
 
 // =====================================================================
@@ -466,7 +496,8 @@ async function renderBlocks(body) {
   body.querySelectorAll('[data-del]').forEach((b) => {
     b.onclick = async () => {
       if (!confirm('Remover este bloqueio?')) return;
-      await supabase.from('room_blocks').delete().eq('id', b.dataset.del);
+      const { error } = await supabase.from('room_blocks').delete().eq('id', b.dataset.del);
+      if (error) { toast('Erro ao remover: ' + error.message, 'error'); return; }
       renderBlocks(body);
     };
   });
