@@ -202,10 +202,21 @@ function openUserForm(user, body, userRoles = []) {
           company_responsible: form.company_responsible.value.trim(),
         }).eq('id', user.id);
         if (upErr) throw new Error(upErr.message);
-        const { error: delErr } = await supabase.from('user_roles').delete().eq('user_id', user.id);
-        if (delErr) throw new Error(delErr.message);
-        const { error: insErr } = await supabase.from('user_roles').insert(selectedRoles.map(role => ({ user_id: user.id, role })));
-        if (insErr) throw new Error(insErr.message);
+        // Atualiza as funções por DIFERENÇA, adicionando as novas ANTES de
+        // remover as antigas. Se apagássemos "gestor" antes de reinserir, o
+        // próprio gestor perderia a permissão e ficaria sem nenhuma função.
+        const { data: currentRoles } = await supabase.from('user_roles').select('role').eq('user_id', user.id);
+        const cur = (currentRoles || []).map((r) => r.role);
+        const toAdd = selectedRoles.filter((r) => !cur.includes(r));
+        const toRemove = cur.filter((r) => !selectedRoles.includes(r));
+        if (toAdd.length) {
+          const { error } = await supabase.from('user_roles').insert(toAdd.map((role) => ({ user_id: user.id, role })));
+          if (error) throw new Error(error.message);
+        }
+        for (const role of toRemove) {
+          const { error } = await supabase.from('user_roles').delete().eq('user_id', user.id).eq('role', role);
+          if (error) throw new Error(error.message);
+        }
         toast('Usuário atualizado.', 'success');
       }
       close();
