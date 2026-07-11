@@ -103,7 +103,14 @@ export async function signIn(email, password) {
   const { error } = await supabase.auth.signInWithPassword({ email, password });
   if (error) {
     registerFailedAttempt();
-    if (error.message?.toLowerCase().includes('invalid')) {
+    const msg = (error.message || '').toLowerCase();
+    if (msg.includes('not confirmed') || msg.includes('confirm')) {
+      throw new Error(
+        'Conta ainda não confirmada. O gestor precisa desligar "Confirm email" ' +
+        'nas configurações de Autenticação do Supabase e recriar este usuário.'
+      );
+    }
+    if (msg.includes('invalid')) {
       throw new Error('E-mail ou senha inválidos.');
     }
     throw new Error(error.message);
