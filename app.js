@@ -296,12 +296,7 @@ async function renderMyAvailability(container) {
     )
   );
 
-  const { data: myResps } = await supabase
-    .from('availability_responses').select('*').eq('responder_id', uid);
   setLoading(false);
-
-  const respByReq = {};
-  (myResps ?? []).forEach((r) => { respByReq[r.request_id] = r; });
 
   container.innerHTML = `
     <div class="module-head"><h1>Minha disponibilidade</h1></div>
@@ -327,16 +322,16 @@ async function renderMyAvailability(container) {
       <h2>Solicitações para responder</h2>
       <div class="req-list">
         ${(reqs ?? []).map(rq => {
-          const mine = respByReq[rq.id];
+          const aberta = !rq.status || rq.status === 'aberta';
+          const mineAccepted = rq.accepted_by === uid;
           return `<div class="req-card">
             <div class="req-head"><strong>${formatDateBR(rq.request_date)}</strong>
               <span>${rq.start_time ? `${hhmm(rq.start_time)}–${hhmm(rq.end_time)}` : ''}</span></div>
             <p>${escapeHtml(rq.message ?? '')}</p>
-            <div class="resp-actions" data-req="${rq.id}">
-              <button class="btn small ${mine?.answer === 'disponivel' ? 'primary' : 'ghost'}" data-answer="disponivel">Disponível</button>
-              <button class="btn small ${mine?.answer === 'indisponivel' ? 'primary' : 'ghost'}" data-answer="indisponivel">Indisponível</button>
-              ${mine ? `<span class="badge ${mine.answer === 'disponivel' ? 'ok' : 'off'}">Respondido: ${mine.answer}</span>` : ''}
-            </div>
+            ${aberta ? `<div class="resp-actions" data-req="${rq.id}">
+              <button class="btn small primary" data-answer="disponivel">✅ Confirmar</button>
+              <button class="btn small ghost" data-answer="indisponivel">❌ Não posso</button>
+            </div>` : `<span class="badge ${mineAccepted ? 'ok' : 'off'}">${mineAccepted ? 'Você assumiu esta vaga' : 'Vaga já preenchida'}</span>`}
           </div>`;
         }).join('') || '<p class="empty">Nenhuma solicitação para a sua função.</p>'}
       </div>
@@ -367,13 +362,16 @@ async function renderMyAvailability(container) {
     group.querySelectorAll('[data-answer]').forEach((btn) => {
       btn.onclick = async () => {
         const reqId = group.dataset.req;
-        const { error } = await supabase.from('availability_responses').upsert({
-          request_id: reqId,
-          responder_id: uid,
-          answer: btn.dataset.answer,
-        }, { onConflict: 'request_id,responder_id' });
-        if (error) toast('Erro: ' + error.message, 'error');
-        else { toast('Resposta registrada.', 'success'); renderMyAvailability(container); }
+        const aceitar = btn.dataset.answer === 'disponivel';
+        btn.disabled = true;
+        const { data: res, error } = await supabase.rpc('respond_availability', {
+          p_request_id: reqId, p_accept: aceitar,
+        });
+        if (error) { toast('Erro: ' + error.message, 'error'); btn.disabled = false; return; }
+        if (res === 'preenchida') toast('Você confirmou! Quem agendou e o gestor foram avisados.', 'success', 6000);
+        else if (res === 'ja_preenchida') toast('Esta vaga já foi preenchida por outra pessoa.', 'warn', 6000);
+        else if (res === 'recusada') toast('Você recusou. A disponibilidade continua aberta para os demais.', 'info', 5000);
+        renderMyAvailability(container);
       };
     });
   });

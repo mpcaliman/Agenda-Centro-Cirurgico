@@ -30,6 +30,21 @@ export const PRIORITIES = [
   { key: 'emergencia', label: 'Emergência' },
 ];
 
+// Funções (user_role) que podem ser convocadas num chamado de disponibilidade.
+export const AVAILABILITY_ROLES = [
+  { value: 'cirurgiao', label: 'Cirurgião' },
+  { value: 'cirurgiao_auxiliar', label: 'Cirurgião auxiliar' },
+  { value: 'anestesiologista', label: 'Anestesiologista' },
+  { value: 'pediatra', label: 'Pediatra' },
+  { value: 'auxiliar', label: 'Auxiliar' },
+  { value: 'empresa', label: 'Empresa prestadora' },
+];
+
+export function labelForUserRole(role) {
+  return AVAILABILITY_ROLES.find((r) => r.value === role)?.label
+    ?? (role === 'gestor' ? 'Gestor' : role);
+}
+
 // Caches simples de listas de apoio.
 let cache = {
   rooms: [], statuses: [], accommodations: [], equipment: [], people: [],
@@ -571,16 +586,18 @@ export async function openAppointmentDetails(id, { onEdit } = {}) {
 
   // Solicitações de disponibilidade deste procedimento (por evento).
   const avail = await loadAppointmentAvailability(a.id);
-  const respByReq = {};
-  avail.responses.forEach((r) => { (respByReq[r.request_id] ??= []).push(r); });
   const availHtml = avail.requests.length
     ? avail.requests.map((rq) => {
-        const alvo = rq.target_user_id ? peopleName(rq.target_user_id) : labelForRole(rq.target_role);
-        const resps = respByReq[rq.id] || [];
-        const respTxt = resps.length
-          ? resps.map((r) => `<span class="badge ${r.answer === 'disponivel' ? 'ok' : r.answer === 'indisponivel' ? 'off' : ''}">${escapeHtml(r.answer)}</span>`).join(' ')
-          : '<em>aguardando resposta</em>';
-        return `<li>Solicitado a <strong>${escapeHtml(alvo)}</strong>: ${respTxt}${rq.message ? ` — ${escapeHtml(rq.message)}` : ''}</li>`;
+        const alvo = rq.target_user_id ? peopleName(rq.target_user_id) : labelForUserRole(rq.target_role);
+        let statusTxt;
+        if (rq.status === 'preenchida') {
+          statusTxt = `<span class="badge ok">Preenchida por ${escapeHtml(peopleName(rq.accepted_by))}</span>`;
+        } else if (rq.status === 'cancelada') {
+          statusTxt = '<span class="badge off">Cancelada</span>';
+        } else {
+          statusTxt = '<span class="badge">Em aberto</span>';
+        }
+        return `<li>Vaga de <strong>${escapeHtml(alvo)}</strong>: ${statusTxt}${rq.message ? ` — ${escapeHtml(rq.message)}` : ''}</li>`;
       }).join('')
     : '<li>Nenhuma solicitação.</li>';
 
@@ -634,7 +651,7 @@ export async function openAppointmentDetails(id, { onEdit } = {}) {
       </div>
       <footer class="modal-footer">
         <button class="btn ghost modal-cancel">Fechar</button>
-        <button class="btn" id="req-avail">🗓️ Solicitar disponibilidade</button>
+        <button class="btn" id="req-avail">🗓️ Abrir disponibilidade</button>
         <button class="btn primary" id="edit-appt">Editar</button>
         <button class="btn" id="wa-appt">Enviar pelo WhatsApp</button>
       </footer>
@@ -689,29 +706,33 @@ async function loadAppointmentAvailability(appointmentId) {
   return { requests: requests ?? [], responses };
 }
 
-// Formulário: solicitar disponibilidade a um profissional para este evento.
+// Formulário: abrir um chamado de disponibilidade POR FUNÇÃO para este
+// evento. Todos os usuários ativos daquela função são notificados; o
+// primeiro que confirmar assume e a vaga fecha (feito pela função segura
+// open_availability no banco).
 function openAvailabilityRequestForm(appt, people, onDone) {
   const modal = document.createElement('div');
   modal.className = 'modal-overlay';
   modal.innerHTML = `
     <div class="modal small">
-      <header class="modal-header"><h2>Solicitar disponibilidade</h2>
+      <header class="modal-header"><h2>Abrir disponibilidade</h2>
         <button class="modal-close">&times;</button></header>
       <form class="modal-body" id="avreq-form">
-        <p class="hint">Peça a um profissional que confirme disponibilidade para este procedimento
+        <p class="hint">Abra uma vaga para uma função neste procedimento
         (${formatDateBR(appt.appointment_date)}, ${hhmm(appt.start_time)}–${hhmm(appt.end_time)}).
-        A mensagem não deve conter dados do paciente.</p>
-        <label class="field"><span>Profissional *</span>
-          <select name="target_user_id" required>
+        Todos os profissionais dessa função serão notificados e o primeiro que
+        confirmar assume. A mensagem não deve conter dados do paciente.</p>
+        <label class="field"><span>Função necessária *</span>
+          <select name="target_role" required>
             <option value="">— selecione —</option>
-            ${people.map((p) => `<option value="${p.id}">${escapeHtml(p.full_name)}</option>`).join('')}
+            ${AVAILABILITY_ROLES.map((r) => `<option value="${r.value}">${escapeHtml(r.label)}</option>`).join('')}
           </select></label>
         <label class="field"><span>Mensagem (opcional)</span>
-          <input name="message" placeholder="Ex: Você confirma disponibilidade para esta cirurgia?"></label>
+          <input name="message" placeholder="Ex: Preciso de anestesista para esta cirurgia."></label>
         <div class="form-error" id="avreq-error"></div>
         <footer class="modal-footer">
           <button type="button" class="btn ghost modal-cancel">Cancelar</button>
-          <button type="submit" class="btn primary">Enviar solicitação</button>
+          <button type="submit" class="btn primary">Abrir disponibilidade</button>
         </footer>
       </form>
     </div>`;
@@ -726,20 +747,16 @@ function openAvailabilityRequestForm(appt, people, onDone) {
     const f = e.target;
     const errEl = modal.querySelector('#avreq-error');
     errEl.textContent = '';
+    if (!f.target_role.value) { errEl.textContent = 'Selecione a função.'; return; }
     setLoading(true);
-    const { error } = await supabase.from('availability_requests').insert({
-      surgical_center_id: state.profile.surgical_center_id,
-      appointment_id: appt.id,
-      target_user_id: f.target_user_id.value,
-      request_date: appt.appointment_date,
-      start_time: appt.start_time,
-      end_time: appt.end_time,
-      message: f.message.value.trim() || null,
-      created_by: state.profile.id,
+    const { error } = await supabase.rpc('open_availability', {
+      p_appointment_id: appt.id,
+      p_target_role: f.target_role.value,
+      p_message: f.message.value.trim() || null,
     });
     setLoading(false);
     if (error) { errEl.textContent = error.message; return; }
-    toast('Solicitação de disponibilidade enviada.', 'success');
+    toast('Disponibilidade aberta. Os profissionais dessa função foram notificados.', 'success', 5000);
     close();
     onDone?.();
   };
