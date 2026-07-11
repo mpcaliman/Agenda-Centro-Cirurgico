@@ -15,29 +15,44 @@ const APP_LINK = window.location.origin + window.location.pathname;
 
 // Mostra o resultado do convite com botões de envio por WhatsApp (prioritário)
 // e por e-mail. As credenciais são do próprio usuário convidado.
-function showInviteResult({ nome, email, senha, phone }) {
-  const msg =
-    `Olá, ${nome}! Você foi cadastrado(a) na Agenda do Centro Cirúrgico.\n\n` +
+// Compat: convite continua chamando showInviteResult.
+function showInviteResult(opts) { return showCredentials({ ...opts, mode: 'invite' }); }
+
+// Modal com as credenciais (link + e-mail + senha) e botões de envio por
+// WhatsApp / e-mail. Serve tanto para o convite quanto para a redefinição
+// de senha (mode: 'invite' | 'reset').
+function showCredentials({ nome, email, senha, phone, mode = 'invite' }) {
+  const isReset = mode === 'reset';
+  const titulo = isReset ? 'Senha redefinida ✅' : 'Usuário criado ✅';
+  const senhaLabel = isReset ? 'Nova senha' : 'Senha temporária';
+  const introHtml = isReset
+    ? `Envie a nova senha para <strong>${escapeHtml(nome)}</strong>. O WhatsApp é o meio prioritário.`
+    : `Envie o acesso para <strong>${escapeHtml(nome)}</strong>. O WhatsApp é o meio prioritário.`;
+  const waBtnLabel = isReset ? '📲 Enviar nova senha por WhatsApp' : '📲 Enviar convite por WhatsApp';
+  const mailSubject = isReset ? 'Nova senha — Agenda do Centro Cirúrgico' : 'Acesso — Agenda do Centro Cirúrgico';
+  const msg = (isReset
+    ? `Olá, ${nome}! Sua senha de acesso à Agenda do Centro Cirúrgico foi redefinida.\n\n`
+    : `Olá, ${nome}! Você foi cadastrado(a) na Agenda do Centro Cirúrgico.\n\n`) +
     `Acesse: ${APP_LINK}\n` +
     `Login (e-mail): ${email}\n` +
-    `Senha temporária: ${senha}\n\n` +
+    `${isReset ? 'Nova senha temporária' : 'Senha temporária'}: ${senha}\n\n` +
     `Recomendamos trocar a senha no primeiro acesso.`;
   const modal = document.createElement('div');
   modal.className = 'modal-overlay';
   modal.innerHTML = `
     <div class="modal small">
-      <header class="modal-header"><h2>Usuário criado ✅</h2>
+      <header class="modal-header"><h2>${titulo}</h2>
         <button class="modal-close">&times;</button></header>
       <div class="modal-body">
-        <p class="hint">Envie o acesso para <strong>${escapeHtml(nome)}</strong>. O WhatsApp é o meio prioritário.</p>
+        <p class="hint">${introHtml}</p>
         <div class="cred-box">
           <div><label>Link</label><p>${escapeHtml(APP_LINK)}</p></div>
           <div><label>E-mail</label><p>${escapeHtml(email)}</p></div>
-          <div><label>Senha temporária</label><p><strong>${escapeHtml(senha)}</strong></p></div>
+          <div><label>${senhaLabel}</label><p><strong>${escapeHtml(senha)}</strong></p></div>
         </div>
         <div class="wa-actions">
-          <button class="btn primary block" id="inv-wa">📲 Enviar convite por WhatsApp</button>
-          <a class="btn block" id="inv-mail" href="mailto:${encodeURIComponent(email)}?subject=${encodeURIComponent('Acesso — Agenda do Centro Cirúrgico')}&body=${encodeURIComponent(msg)}">✉️ Enviar por e-mail</a>
+          <button class="btn primary block" id="inv-wa">${waBtnLabel}</button>
+          <a class="btn block" id="inv-mail" href="mailto:${encodeURIComponent(email)}?subject=${encodeURIComponent(mailSubject)}&body=${encodeURIComponent(msg)}">✉️ Enviar por e-mail</a>
         </div>
         <p class="config-hint">Dica: o WhatsApp abre com a mensagem pronta; é só tocar em enviar. O e-mail abre no seu aplicativo de e-mail.</p>
       </div>
@@ -56,6 +71,93 @@ function showInviteResult({ nome, email, senha, phone }) {
 function gerarSenha() {
   const s = Math.random().toString(36).slice(2, 8) + Math.floor(10 + Math.random() * 89);
   return 'Cc' + s;
+}
+
+// Redefinição de senha pelo gestor. Dois caminhos:
+//  1) Definir uma nova senha temporária AGORA (via Edge Function segura
+//     'admin-reset-password', que usa a chave de serviço no servidor —
+//     nunca no site) e entregá-la pelo WhatsApp. Não depende de e-mail.
+//  2) Enviar link de redefinição por e-mail (o próprio usuário cria a
+//     senha). Depende do e-mail chegar e do "Site URL" configurado.
+function openResetPassword(user, body) {
+  if (!user) return;
+  const modal = document.createElement('div');
+  modal.className = 'modal-overlay';
+  modal.innerHTML = `
+    <div class="modal small">
+      <header class="modal-header"><h2>Redefinir senha</h2>
+        <button class="modal-close">&times;</button></header>
+      <form class="modal-body" id="reset-form">
+        <p class="hint">Defina uma nova senha temporária para <strong>${escapeHtml(user.full_name)}</strong>
+          (${escapeHtml(user.email)}). Você poderá enviá-la pelo WhatsApp em seguida.</p>
+        <label class="field"><span>Nova senha temporária * (mínimo 6)</span>
+          <input name="senha" required minlength="6" value="${gerarSenha()}"></label>
+        <div class="form-error" id="rp-error"></div>
+        <footer class="modal-footer">
+          <button type="button" class="btn ghost" id="rp-email">Enviar link por e-mail</button>
+          <button type="submit" class="btn primary">Definir nova senha</button>
+        </footer>
+      </form>
+    </div>`;
+  document.body.appendChild(modal);
+  const close = () => modal.remove();
+  modal.querySelector('.modal-close').onclick = close;
+  modal.addEventListener('click', (e) => { if (e.target === modal) close(); });
+  const err = modal.querySelector('#rp-error');
+
+  modal.querySelector('#reset-form').onsubmit = async (e) => {
+    e.preventDefault();
+    err.textContent = '';
+    const senha = e.target.elements['senha'].value.trim();
+    if (senha.length < 6) { err.textContent = 'Mínimo de 6 caracteres.'; return; }
+    setLoading(true);
+    try {
+      const { data, error } = await supabase.functions.invoke('admin-reset-password', {
+        body: { user_id: user.id, new_password: senha },
+      });
+      if (error) {
+        // A Edge Function devolve { error } em JSON; tenta lê-lo.
+        let detail = '';
+        try { detail = (await error.context?.json())?.error || ''; } catch (_) { /* ignore */ }
+        throw new Error(detail || error.message);
+      }
+      if (data && data.error) throw new Error(data.error);
+      toast('Senha redefinida.', 'success');
+      close();
+      showCredentials({ nome: user.full_name, email: user.email, senha, phone: user.phone_whatsapp, mode: 'reset' });
+    } catch (ex) {
+      err.textContent = friendlyResetError(ex);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  modal.querySelector('#rp-email').onclick = async () => {
+    err.textContent = '';
+    setLoading(true);
+    try {
+      const redirectTo = APP_LINK + '#recovery';
+      const { error } = await supabase.auth.resetPasswordForEmail(user.email, { redirectTo });
+      if (error) throw new Error(error.message);
+      toast('Link de redefinição enviado para o e-mail do usuário.', 'success', 6000);
+      close();
+    } catch (ex) {
+      err.textContent = ex.message;
+    } finally {
+      setLoading(false);
+    }
+  };
+}
+
+// Mensagem amigável quando a Edge Function de reset ainda não foi instalada.
+function friendlyResetError(ex) {
+  const m = String(ex?.message ?? ex ?? '');
+  if (/failed to send|failed to fetch|not found|404|non-2xx|edge function/i.test(m)) {
+    return 'A função "admin-reset-password" ainda não está instalada no Supabase. ' +
+      'Instale a Edge Function (veja o arquivo edge-functions/admin-reset-password no projeto) ' +
+      'ou use "Enviar link por e-mail".';
+  }
+  return m;
 }
 
 // Gera a lista de datas (yyyy-mm-dd) de um bloqueio recorrente, do início
@@ -159,6 +261,7 @@ async function renderUsers(body) {
             <td><span class="badge ${u.status === 'ativo' ? 'ok' : 'off'}">${u.status}</span></td>
             <td class="row-actions">
               <button class="btn-link" data-edit="${u.id}">Editar</button>
+              ${state.isGestor ? `<button class="btn-link" data-reset="${u.id}">Senha</button>` : ''}
               <button class="btn-link" data-toggle="${u.id}" data-status="${u.status}">${u.status === 'ativo' ? 'Inativar' : 'Ativar'}</button>
             </td>
           </tr>`).join('')}
@@ -168,6 +271,9 @@ async function renderUsers(body) {
   body.querySelector('#new-user').onclick = () => openUserForm(null, body);
   body.querySelectorAll('[data-edit]').forEach((b) => {
     b.onclick = () => openUserForm((users ?? []).find(u => u.id === b.dataset.edit), body, rolesByUser[b.dataset.edit] ?? []);
+  });
+  body.querySelectorAll('[data-reset]').forEach((b) => {
+    b.onclick = () => openResetPassword((users ?? []).find(u => u.id === b.dataset.reset), body);
   });
   body.querySelectorAll('[data-toggle]').forEach((b) => {
     b.onclick = async () => {
