@@ -720,7 +720,10 @@ create or replace function public.save_appointment(
 )
 returns uuid
 language plpgsql
-security invoker
+-- SECURITY DEFINER: a função já valida o centro (current_center_id) e define
+-- created_by = auth.uid(), então a gravação controlada é segura. Assim evita
+-- que a verificação de RLS no INSERT rejeite a criação do agendamento.
+security definer
 set search_path = public
 as $$
 declare

@@ -257,6 +257,9 @@ legend { padding: 0 .4rem; font-weight: 700; color: var(--primary-2); font-size:
 .modal-close { background: none; border: none; font-size: 1.6rem; cursor: pointer; color: var(--muted); line-height: 1; }
 .modal-body { padding: 1.1rem 1.2rem; }
 .modal-footer { display: flex; justify-content: flex-end; gap: .6rem; padding: .9rem 1.2rem; border-top: 1px solid var(--border); flex-wrap: wrap; }
+.surgeon-row { display: flex; gap: .4rem; align-items: center; margin-bottom: .35rem; }
+.surgeon-row select { flex: 1; min-width: 0; }
+#add-surgeon { margin-top: .2rem; }
 .equip-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: .3rem; }
 .equip-grid .qty { width: 56px; margin-left: auto; }
 .files-list { list-style: none; padding: 0; margin: .5rem 0 0; }

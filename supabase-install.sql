@@ -1,8 +1,6 @@
 -- =====================================================================
 --  INSTALAÇÃO COMPLETA DA AGENDA DO CENTRO CIRÚRGICO
 --  Cole TUDO isto no Supabase → SQL Editor → New query → Run.
---  Cria tabelas, funções, RLS, bucket de arquivos e dados iniciais
---  (um centro 'Centro Cirúrgico' com salas/status padrão).
 -- =====================================================================
 
 -- =====================================================================
@@ -727,7 +725,10 @@ create or replace function public.save_appointment(
 )
 returns uuid
 language plpgsql
-security invoker
+-- SECURITY DEFINER: a função já valida o centro (current_center_id) e define
+-- created_by = auth.uid(), então a gravação controlada é segura. Assim evita
+-- que a verificação de RLS no INSERT rejeite a criação do agendamento.
+security definer
 set search_path = public
 as $$
 declare

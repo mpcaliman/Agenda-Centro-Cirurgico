@@ -229,7 +229,29 @@ export async function openAppointmentModal({ prefill = {}, existingId = null, on
   // Constrói os seletores de profissionais por papel.
   const profByRole = (role) => profs.filter((p) => p.role === role).map((p) => p.user_id);
 
+  // Opções de pessoas (reutilizadas nos cirurgiões adicionais dinâmicos).
+  const peopleOpts = (selected) => `<option value="">— selecione —</option>` +
+    ref.people.map((p) => `<option value="${p.id}" ${String(p.id) === String(selected) ? 'selected' : ''}>${escapeHtml(p.full_name)}</option>`).join('');
+
+  // Uma linha de cirurgião adicional (com botão remover).
+  const surgeonRow = (uid) => `
+    <div class="surgeon-row" data-surgeon-row>
+      <select data-prof-role="cirurgiao_adicional">${peopleOpts(uid)}</select>
+      <button type="button" class="btn small ghost" data-remove-surgeon title="Remover">✕</button>
+    </div>`;
+
+  const additionalSurgeons = profByRole('cirurgiao_adicional');
+
   const professionalFields = PROFESSIONAL_ROLES.map((r) => {
+    // Cirurgiões adicionais: lista dinâmica com botão "➕ Adicionar cirurgião".
+    if (r.key === 'cirurgiao_adicional') {
+      return `
+        <div class="field">
+          <span>Cirurgiões adicionais</span>
+          <div id="extra-surgeons">${additionalSurgeons.map(surgeonRow).join('')}</div>
+          <button type="button" class="btn small" id="add-surgeon">➕ Adicionar cirurgião</button>
+        </div>`;
+    }
     const selectedIds = r.key === 'cirurgiao_principal'
       ? [a.surgeon_id].filter(Boolean)
       : profByRole(r.key);
@@ -390,6 +412,17 @@ export async function openAppointmentModal({ prefill = {}, existingId = null, on
   modal.querySelector('.modal-close').onclick = close;
   modal.querySelector('.modal-cancel').onclick = close;
   modal.addEventListener('click', (e) => { if (e.target === modal) close(); });
+
+  // Cirurgiões adicionais: botão "➕ Adicionar" e remover linha.
+  const addSurgeonBtn = modal.querySelector('#add-surgeon');
+  const extraSurgeons = modal.querySelector('#extra-surgeons');
+  if (addSurgeonBtn && extraSurgeons) {
+    addSurgeonBtn.onclick = () => extraSurgeons.insertAdjacentHTML('beforeend', surgeonRow(''));
+    extraSurgeons.addEventListener('click', (e) => {
+      const rm = e.target.closest('[data-remove-surgeon]');
+      if (rm) rm.closest('[data-surgeon-row]')?.remove();
+    });
+  }
 
   // Ações sobre arquivos existentes.
   modal.querySelectorAll('[data-view-file]').forEach((btn) => {
