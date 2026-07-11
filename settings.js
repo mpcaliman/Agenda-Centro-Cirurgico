@@ -149,6 +149,37 @@ function openResetPassword(user, body) {
   };
 }
 
+// Exclusão definitiva da conta de acesso (via Edge Function segura). Só é
+// permitida para usuários SEM registros vinculados; caso contrário o banco
+// bloqueia e o app orienta a usar "Inativar".
+async function excluirUsuario(user, body) {
+  if (!user) return;
+  const ok = confirm(
+    `Excluir definitivamente o usuário "${user.full_name}"?\n\n` +
+    `Isso apaga a conta de acesso dele. Se o usuário já tiver agendamentos ou ` +
+    `registros no histórico, a exclusão será bloqueada — nesse caso use "Inativar".`
+  );
+  if (!ok) return;
+  setLoading(true);
+  try {
+    const { data, error } = await supabase.functions.invoke('admin-reset-password', {
+      body: { action: 'delete', user_id: user.id },
+    });
+    if (error) {
+      let detail = '';
+      try { detail = (await error.context?.json())?.error || ''; } catch (_) { /* ignore */ }
+      throw new Error(detail || error.message);
+    }
+    if (data && data.error) throw new Error(data.error);
+    toast('Usuário excluído.', 'success');
+    renderUsers(body);
+  } catch (ex) {
+    toast(friendlyResetError(ex), 'error', 8000);
+  } finally {
+    setLoading(false);
+  }
+}
+
 // Mensagem amigável quando a Edge Function de reset ainda não foi instalada.
 function friendlyResetError(ex) {
   const m = String(ex?.message ?? ex ?? '');
@@ -263,6 +294,7 @@ async function renderUsers(body) {
               <button class="btn-link" data-edit="${u.id}">Editar</button>
               ${state.isGestor ? `<button class="btn-link" data-reset="${u.id}">Senha</button>` : ''}
               <button class="btn-link" data-toggle="${u.id}" data-status="${u.status}">${u.status === 'ativo' ? 'Inativar' : 'Ativar'}</button>
+              ${state.isGestor && u.id !== state.profile.id ? `<button class="btn-link danger" data-del-user="${u.id}">Excluir</button>` : ''}
             </td>
           </tr>`).join('')}
       </tbody>
@@ -274,6 +306,9 @@ async function renderUsers(body) {
   });
   body.querySelectorAll('[data-reset]').forEach((b) => {
     b.onclick = () => openResetPassword((users ?? []).find(u => u.id === b.dataset.reset), body);
+  });
+  body.querySelectorAll('[data-del-user]').forEach((b) => {
+    b.onclick = () => excluirUsuario((users ?? []).find(u => u.id === b.dataset.delUser), body);
   });
   body.querySelectorAll('[data-toggle]').forEach((b) => {
     b.onclick = async () => {
