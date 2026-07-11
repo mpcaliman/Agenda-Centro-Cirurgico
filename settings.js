@@ -6,8 +6,14 @@
 //  (intervalo da grade, horário de funcionamento, WhatsApp).
 // =====================================================================
 
-import { supabase, state, escapeHtml, toast, setLoading, formatDateBR, hhmm } from './supabase-client.js';
+import { supabase, createAuxClient, state, escapeHtml, toast, setLoading, formatDateBR, hhmm } from './supabase-client.js';
 import { PROFESSIONAL_ROLES } from './appointments.js';
+
+// Gera uma senha temporária legível para novos usuários.
+function gerarSenha() {
+  const s = Math.random().toString(36).slice(2, 8) + Math.floor(10 + Math.random() * 89);
+  return 'Cc' + s;
+}
 
 const ROLE_LABELS = {
   gestor: 'Gestor', cirurgiao: 'Cirurgião', cirurgiao_auxiliar: 'Cirurgião auxiliar',
@@ -126,6 +132,8 @@ function openUserForm(user, body, userRoles = []) {
           <label class="field"><span>Celular (WhatsApp)</span>
             <input name="phone_whatsapp" value="${escapeHtml(user?.phone_whatsapp ?? '')}" placeholder="Ex: 71999999999"></label>
         </div>
+        ${isNew ? `<label class="field"><span>Senha temporária * (compartilhe com o usuário)</span>
+          <input name="senha" required minlength="6" value="${gerarSenha()}"></label>` : ''}
         <div class="grid-2">
           <label class="field"><span>Tipo de registro</span>
             <input name="registration_type" value="${escapeHtml(user?.registration_type ?? '')}" placeholder="CRM, COREN, CNPJ..."></label>
@@ -170,25 +178,42 @@ function openUserForm(user, body, userRoles = []) {
     setLoading(true);
     try {
       if (isNew) {
-        // Cria/convida via Edge Function (usa service_role no servidor).
-        const { data, error } = await supabase.functions.invoke('invite-user', {
-          body: {
-            email: form.email.value.trim(),
-            full_name: form.full_name.value.trim(),
-            phone_whatsapp: form.phone_whatsapp.value.trim(),
-            registration_type: form.registration_type.value.trim(),
-            registration_number: form.registration_number.value.trim(),
-            roles: selectedRoles,
-            is_company: form.is_company.checked,
-            company_trade_name: form.company_trade_name.value.trim(),
-            cnpj: form.cnpj.value.trim(),
-            company_responsible: form.company_responsible.value.trim(),
-            redirect_to: window.location.origin + window.location.pathname,
-          },
+        // Cria o usuário direto pela tela (sem Edge Function):
+        // 1) cria a conta de acesso (signUp) num cliente auxiliar que NÃO
+        //    troca a sessão do gestor;
+        // 2) o gestor grava o perfil e as funções (RLS permite ao gestor).
+        const email = form.email.value.trim();
+        const senha = form.senha.value.trim();
+        if (senha.length < 6) { err.textContent = 'Defina uma senha temporária (mínimo 6 caracteres).'; setLoading(false); return; }
+
+        const aux = createAuxClient();
+        if (!aux) throw new Error('Biblioteca indisponível.');
+        const { data: signData, error: signErr } = await aux.auth.signUp({ email, password: senha });
+        if (signErr) throw new Error(signErr.message);
+        const newId = signData?.user?.id;
+        if (!newId) throw new Error('Não foi possível criar a conta (verifique se o e-mail já existe).');
+
+        const { error: pErr } = await supabase.from('profiles').insert({
+          id: newId,
+          surgical_center_id: center(),
+          full_name: form.full_name.value.trim(),
+          email,
+          phone_whatsapp: form.phone_whatsapp.value.trim() || null,
+          registration_type: form.registration_type.value.trim() || null,
+          registration_number: form.registration_number.value.trim() || null,
+          status: 'ativo',
+          is_company: form.is_company.checked,
+          company_trade_name: form.company_trade_name.value.trim() || null,
+          cnpj: form.cnpj.value.trim() || null,
+          company_responsible: form.company_responsible.value.trim() || null,
         });
-        if (error) throw new Error(error.message);
-        if (data?.error) throw new Error(data.error);
-        toast('Convite enviado com sucesso.', 'success');
+        if (pErr) throw new Error('Conta criada, mas falhou ao salvar o perfil: ' + pErr.message);
+
+        const { error: rErr } = await supabase.from('user_roles')
+          .insert(selectedRoles.map((role) => ({ user_id: newId, role })));
+        if (rErr) throw new Error('Perfil criado, mas falhou ao salvar as funções: ' + rErr.message);
+
+        toast('Usuário criado! Compartilhe o e-mail e a senha temporária: ' + senha, 'success', 9000);
       } else {
         // Atualiza perfil + funções diretamente (RLS permite ao gestor).
         const { error: upErr } = await supabase.from('profiles').update({

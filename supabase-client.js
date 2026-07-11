@@ -50,6 +50,16 @@ export function clearConfig() {
   try { localStorage.removeItem(LS_URL); localStorage.removeItem(LS_KEY); } catch (e) {}
 }
 
+// Cria um cliente auxiliar que NÃO persiste sessão — usado para criar novos
+// usuários (signUp) sem derrubar/trocar a sessão do gestor logado.
+export function createAuxClient() {
+  const c = getConfig();
+  if (!createClient) return null;
+  return createClient(c.url, c.key, {
+    auth: { persistSession: false, autoRefreshToken: false, detectSessionInUrl: false },
+  });
+}
+
 // Verifica se a configuração do Supabase é válida (evita quebrar ao carregar).
 export function configIsValid() {
   const { url, key } = getConfig();
