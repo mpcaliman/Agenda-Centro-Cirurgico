@@ -58,6 +58,28 @@ function gerarSenha() {
   return 'Cc' + s;
 }
 
+// Gera a lista de datas (yyyy-mm-dd) de um bloqueio recorrente, do início
+// até a data final, conforme a frequência.
+function gerarDatasRecorrentes(inicioISO, ateISO, freq) {
+  const datas = [];
+  const fim = new Date(ateISO + 'T12:00:00');
+  let d = new Date(inicioISO + 'T12:00:00');
+  let guard = 0;
+  while (d <= fim && guard < 500) {
+    const y = d.getFullYear();
+    const m = String(d.getMonth() + 1).padStart(2, '0');
+    const day = String(d.getDate()).padStart(2, '0');
+    datas.push(`${y}-${m}-${day}`);
+    if (freq === 'diario') d.setDate(d.getDate() + 1);
+    else if (freq === 'semanal') d.setDate(d.getDate() + 7);
+    else if (freq === 'quinzenal') d.setDate(d.getDate() + 14);
+    else if (freq === 'mensal') d.setMonth(d.getMonth() + 1);
+    else break;
+    guard++;
+  }
+  return datas;
+}
+
 const ROLE_LABELS = {
   gestor: 'Gestor', cirurgiao: 'Cirurgião', cirurgiao_auxiliar: 'Cirurgião auxiliar',
   anestesiologista: 'Anestesiologista', pediatra: 'Pediatra', auxiliar: 'Auxiliar', empresa: 'Empresa prestadora',
@@ -531,6 +553,14 @@ async function renderBlocks(body) {
         <option value="">Bloqueio geral (todos)</option>
         ${(people ?? []).map(p => `<option value="${p.id}">Reservar para: ${escapeHtml(p.full_name)}</option>`).join('')}
       </select>
+      <select name="frequencia" title="Frequência do bloqueio">
+        <option value="unico">Sem repetição</option>
+        <option value="diario">Diário</option>
+        <option value="semanal">Semanal</option>
+        <option value="quinzenal">Quinzenal (15/15)</option>
+        <option value="mensal">Mensal</option>
+      </select>
+      <input type="date" name="repeat_until" title="Repetir até (bloqueio recorrente)" style="display:none">
       <input name="reason" placeholder="Motivo">
       <button class="btn primary small" type="submit">Bloquear</button>
     </form>
@@ -559,21 +589,46 @@ async function renderBlocks(body) {
     if (on) { form.start_time.value = open; form.end_time.value = close; }
   };
 
+  // Mostra o campo "repetir até" apenas quando há frequência.
+  form.frequencia.onchange = () => {
+    form.repeat_until.style.display = form.frequencia.value === 'unico' ? 'none' : '';
+    form.repeat_until.required = form.frequencia.value !== 'unico';
+  };
+
   form.onsubmit = async (e) => {
     e.preventDefault();
-    const payload = {
+    const freq = form.frequencia.value;
+    const base = {
       surgical_center_id: center(),
       room_id: form.room_id.value || null,
-      block_date: form.block_date.value,
       start_time: form.all_day.checked ? open : form.start_time.value,
       end_time: form.all_day.checked ? close : form.end_time.value,
       reserved_user_id: form.reserved_user_id.value || null,
       reason: form.reason.value.trim(),
       created_by: state.profile.id,
     };
-    const { error } = await supabase.from('room_blocks').insert(payload);
-    if (error) toast('Erro: ' + error.message, 'error');
-    else { toast(payload.reserved_user_id ? 'Horário reservado ao usuário.' : 'Sala bloqueada.', 'success'); renderBlocks(body); }
+
+    // Datas do bloqueio (uma ou várias, conforme a frequência).
+    let datas = [form.block_date.value];
+    if (freq !== 'unico') {
+      const ate = form.repeat_until.value;
+      if (!ate) { toast('Informe "repetir até" para o bloqueio recorrente.', 'error'); return; }
+      if (ate < form.block_date.value) { toast('A data final deve ser posterior à inicial.', 'error'); return; }
+      datas = gerarDatasRecorrentes(form.block_date.value, ate, freq);
+    }
+
+    const rows = datas.map((d) => ({ ...base, block_date: d }));
+    setLoading(true);
+    const { error } = await supabase.from('room_blocks').insert(rows);
+    setLoading(false);
+    if (error) { toast('Erro: ' + error.message, 'error'); return; }
+    toast(
+      rows.length > 1
+        ? `${rows.length} bloqueios criados.`
+        : (base.reserved_user_id ? 'Horário reservado ao usuário.' : 'Sala bloqueada.'),
+      'success',
+    );
+    renderBlocks(body);
   };
   body.querySelectorAll('[data-del]').forEach((b) => {
     b.onclick = async () => {
