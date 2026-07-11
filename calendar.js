@@ -263,7 +263,7 @@ function renderGrid(body) {
       if (!item) {
         html += `<td class="slot free" data-room="${room.id}" data-time="${minutesToTime(m)}"></td>`;
       } else if (item.situation === 'bloqueado') {
-        html += `<td class="slot blocked"><span>Bloqueado</span></td>`;
+        html += `<td class="slot blocked"><span>${state.isGestor ? 'Bloqueado' : 'Indisponível'}</span></td>`;
       } else if (item.situation === 'reservado') {
         // Horário reservado ao próprio usuário: ele pode agendar.
         html += `<td class="slot free reserved" data-room="${room.id}" data-time="${minutesToTime(m)}"><span>Reservado p/ você</span></td>`;
@@ -274,7 +274,7 @@ function renderGrid(body) {
         } else if (det.kind === 'appointment' && !passesTextFilter(det.appt)) {
           html += `<td class="slot free"></td>`;
         } else {
-          html += `<td class="slot busy neutral"><span>Ocupado</span></td>`;
+          html += `<td class="slot busy neutral"><span>Indisponível</span></td>`;
         }
       }
     }
@@ -305,7 +305,7 @@ function gridCardContent(a) {
       <span class="card-sub">${escapeHtml(a.procedure_name)}</span>
       <span class="card-time">${hhmm(a.start_time)}–${hhmm(a.end_time)}</span>`;
   }
-  return `<span>Ocupado</span>`;
+  return `<span>Indisponível</span>`;
 }
 
 // --- DIA (lista de cartões do dia) -----------------------------------
@@ -381,7 +381,7 @@ function renderList(body) {
   for (const o of occ) {
     const room = dataset.rooms.find(r => r.id === o.room_id)?.name ?? '—';
     let detail, cls = '', apptId = '';
-    if (o.situation === 'bloqueado') { detail = 'Bloqueado'; cls = 'blocked'; }
+    if (o.situation === 'bloqueado') { detail = state.isGestor ? 'Bloqueado' : 'Indisponível'; cls = 'blocked'; }
     else if (o.situation === 'reservado') { detail = 'Reservado para você'; cls = 'reserved'; }
     else {
       const det = detailFor(o.anon_id, o);
@@ -389,7 +389,7 @@ function renderList(body) {
         detail = `${escapeHtml(det.appt.patient_name)} — ${escapeHtml(det.appt.procedure_name)}`;
         apptId = det.appt.id; cls = 'own';
       } else if (det.kind === 'appointment') { continue; }
-      else { detail = 'Ocupado'; cls = 'neutral'; }
+      else { detail = 'Indisponível'; cls = 'neutral'; }
     }
     html += `<tr class="${cls}" ${apptId ? `data-appt="${apptId}"` : ''}>
       <td>${formatDateBR(o.occ_date)}</td><td>${hhmm(o.start_time)}–${hhmm(o.end_time)}</td>
@@ -406,7 +406,7 @@ function renderList(body) {
 function renderCardsFor(occList) {
   return occList.map((o) => {
     if (o.situation === 'bloqueado') {
-      return `<div class="card block"><span class="card-time">${hhmm(o.start_time)}–${hhmm(o.end_time)}</span><span>Bloqueado</span></div>`;
+      return `<div class="card block"><span class="card-time">${hhmm(o.start_time)}–${hhmm(o.end_time)}</span><span>${state.isGestor ? 'Bloqueado' : 'Indisponível'}</span></div>`;
     }
     if (o.situation === 'reservado') {
       const room = dataset.rooms.find(r => r.id === o.room_id)?.name ?? '';
@@ -430,7 +430,7 @@ function renderCardsFor(occList) {
       return '';
     }
     const room = dataset.rooms.find(r => r.id === o.room_id)?.name ?? '';
-    return `<div class="card neutral"><span class="card-time">${hhmm(o.start_time)}–${hhmm(o.end_time)} · ${escapeHtml(room)}</span><span>Ocupado</span></div>`;
+    return `<div class="card neutral"><span class="card-time">${hhmm(o.start_time)}–${hhmm(o.end_time)} · ${escapeHtml(room)}</span><span>Indisponível</span></div>`;
   }).join('');
 }
 

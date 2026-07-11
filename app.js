@@ -289,12 +289,13 @@ async function renderMyAvailability(container) {
   const { data: allReqs } = await supabase
     .from('availability_requests').select('*')
     .order('request_date', { ascending: false });
-  const reqs = (allReqs ?? []).filter((rq) =>
-    rq.created_by !== uid && (
-      rq.target_user_id === uid ||
-      (rq.target_user_id == null && state.roles.includes(rq.target_role))
-    )
-  );
+  const reqs = (allReqs ?? []).filter((rq) => {
+    if (rq.created_by === uid) return false;
+    if (rq.target_user_id === uid) return true;                       // pessoa específica
+    const directed = Array.isArray(rq.target_user_ids) && rq.target_user_ids.length;
+    if (directed) return rq.target_user_ids.includes(uid);            // dirigida a pessoas
+    return rq.target_user_id == null && state.roles.includes(rq.target_role); // aberta por função
+  });
 
   setLoading(false);
 

@@ -706,11 +706,17 @@ async function loadAppointmentAvailability(appointmentId) {
   return { requests: requests ?? [], responses };
 }
 
-// Formulário: abrir um chamado de disponibilidade POR FUNÇÃO para este
-// evento. Todos os usuários ativos daquela função são notificados; o
-// primeiro que confirmar assume e a vaga fecha (feito pela função segura
-// open_availability no banco).
-function openAvailabilityRequestForm(appt, people, onDone) {
+// Formulário: abrir um chamado de disponibilidade para este evento.
+//  - "Todos da função": notifica todos os usuários ativos daquela função.
+//  - "Dirigida": notifica só as pessoas escolhidas (todas da função).
+// Em ambos os casos o primeiro que confirmar assume e a vaga fecha (feito
+// pela função segura open_availability no banco).
+async function openAvailabilityRequestForm(appt, people, onDone) {
+  // Descobre quais funções cada usuário possui (para o modo dirigido).
+  const { data: roleRows } = await supabase.from('user_roles').select('user_id, role');
+  const rolesByUser = {};
+  (roleRows ?? []).forEach((r) => { (rolesByUser[r.user_id] ??= []).push(r.role); });
+
   const modal = document.createElement('div');
   modal.className = 'modal-overlay';
   modal.innerHTML = `
@@ -720,13 +726,21 @@ function openAvailabilityRequestForm(appt, people, onDone) {
       <form class="modal-body" id="avreq-form">
         <p class="hint">Abra uma vaga para uma função neste procedimento
         (${formatDateBR(appt.appointment_date)}, ${hhmm(appt.start_time)}–${hhmm(appt.end_time)}).
-        Todos os profissionais dessa função serão notificados e o primeiro que
-        confirmar assume. A mensagem não deve conter dados do paciente.</p>
+        O primeiro que confirmar assume. A mensagem não deve conter dados do paciente.</p>
         <label class="field"><span>Função necessária *</span>
           <select name="target_role" required>
             <option value="">— selecione —</option>
             ${AVAILABILITY_ROLES.map((r) => `<option value="${r.value}">${escapeHtml(r.label)}</option>`).join('')}
           </select></label>
+        <fieldset class="dest-mode">
+          <legend>Enviar para</legend>
+          <label class="chk"><input type="radio" name="dest" value="todos" checked><span>Todos dessa função</span></label>
+          <label class="chk"><input type="radio" name="dest" value="dirigida"><span>Dirigir a pessoas específicas</span></label>
+        </fieldset>
+        <div class="field" id="dir-box" style="display:none">
+          <span>Escolha uma ou mais pessoas dessa função</span>
+          <div id="dir-people" class="roles-grid"></div>
+        </div>
         <label class="field"><span>Mensagem (opcional)</span>
           <input name="message" placeholder="Ex: Preciso de anestesista para esta cirurgia."></label>
         <div class="form-error" id="avreq-error"></div>
@@ -742,21 +756,49 @@ function openAvailabilityRequestForm(appt, people, onDone) {
   modal.querySelector('.modal-cancel').onclick = close;
   modal.addEventListener('click', (e) => { if (e.target === modal) close(); });
 
-  modal.querySelector('#avreq-form').onsubmit = async (e) => {
+  const f = modal.querySelector('#avreq-form');
+  const dirBox = modal.querySelector('#dir-box');
+  const dirPeople = modal.querySelector('#dir-people');
+  const errEl = modal.querySelector('#avreq-error');
+
+  // Preenche a lista de pessoas da função escolhida (modo dirigido).
+  const fillPeople = () => {
+    const role = f.target_role.value;
+    const elig = (people ?? []).filter((p) => (rolesByUser[p.id] ?? []).includes(role));
+    dirPeople.innerHTML = elig.length
+      ? elig.map((p) => `<label class="chk"><input type="checkbox" name="dir_user" value="${p.id}"><span>${escapeHtml(p.full_name)}</span></label>`).join('')
+      : '<p class="empty small">Nenhum usuário cadastrado nessa função.</p>';
+  };
+
+  const syncMode = () => {
+    const dirigida = f.dest.value === 'dirigida';
+    dirBox.style.display = dirigida ? '' : 'none';
+    if (dirigida) fillPeople();
+  };
+  f.querySelectorAll('[name="dest"]').forEach((r) => { r.onchange = syncMode; });
+  f.target_role.onchange = () => { if (f.dest.value === 'dirigida') fillPeople(); };
+
+  f.onsubmit = async (e) => {
     e.preventDefault();
-    const f = e.target;
-    const errEl = modal.querySelector('#avreq-error');
     errEl.textContent = '';
     if (!f.target_role.value) { errEl.textContent = 'Selecione a função.'; return; }
+    let targetUserIds = null;
+    if (f.dest.value === 'dirigida') {
+      targetUserIds = Array.from(f.querySelectorAll('[name="dir_user"]:checked')).map((c) => c.value);
+      if (!targetUserIds.length) { errEl.textContent = 'Selecione ao menos uma pessoa.'; return; }
+    }
     setLoading(true);
     const { error } = await supabase.rpc('open_availability', {
       p_appointment_id: appt.id,
       p_target_role: f.target_role.value,
       p_message: f.message.value.trim() || null,
+      p_target_user_ids: targetUserIds,
     });
     setLoading(false);
     if (error) { errEl.textContent = error.message; return; }
-    toast('Disponibilidade aberta. Os profissionais dessa função foram notificados.', 'success', 5000);
+    toast(targetUserIds
+      ? 'Disponibilidade dirigida enviada às pessoas escolhidas.'
+      : 'Disponibilidade aberta. Os profissionais dessa função foram notificados.', 'success', 5000);
     close();
     onDone?.();
   };
