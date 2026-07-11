@@ -283,11 +283,18 @@ async function renderMyAvailability(container) {
     .from('unavailability').select('*').eq('user_id', uid)
     .order('start_datetime', { ascending: false });
 
-  // Solicitações destinadas às funções do usuário.
-  const { data: reqs } = await supabase
+  // Solicitações destinadas ao usuário: por PESSOA (target_user_id) ou por
+  // FUNÇÃO (target_role). A RLS já limita o que ele pode ver; aqui filtramos
+  // para as que ele deve responder (exclui as que ele mesmo criou).
+  const { data: allReqs } = await supabase
     .from('availability_requests').select('*')
-    .in('target_role', state.roles.length ? state.roles : ['__none__'])
     .order('request_date', { ascending: false });
+  const reqs = (allReqs ?? []).filter((rq) =>
+    rq.created_by !== uid && (
+      rq.target_user_id === uid ||
+      (rq.target_user_id == null && state.roles.includes(rq.target_role))
+    )
+  );
 
   const { data: myResps } = await supabase
     .from('availability_responses').select('*').eq('responder_id', uid);

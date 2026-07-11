@@ -569,6 +569,21 @@ export async function openAppointmentDetails(id, { onEdit } = {}) {
   const accName = ref.accommodations.find((x) => x.id === a.accommodation_type_id)?.name ?? '—';
   const peopleName = (uid) => ref.people.find((p) => p.id === uid)?.full_name ?? uid;
 
+  // Solicitações de disponibilidade deste procedimento (por evento).
+  const avail = await loadAppointmentAvailability(a.id);
+  const respByReq = {};
+  avail.responses.forEach((r) => { (respByReq[r.request_id] ??= []).push(r); });
+  const availHtml = avail.requests.length
+    ? avail.requests.map((rq) => {
+        const alvo = rq.target_user_id ? peopleName(rq.target_user_id) : labelForRole(rq.target_role);
+        const resps = respByReq[rq.id] || [];
+        const respTxt = resps.length
+          ? resps.map((r) => `<span class="badge ${r.answer === 'disponivel' ? 'ok' : r.answer === 'indisponivel' ? 'off' : ''}">${escapeHtml(r.answer)}</span>`).join(' ')
+          : '<em>aguardando resposta</em>';
+        return `<li>Solicitado a <strong>${escapeHtml(alvo)}</strong>: ${respTxt}${rq.message ? ` — ${escapeHtml(rq.message)}` : ''}</li>`;
+      }).join('')
+    : '<li>Nenhuma solicitação.</li>';
+
   const profsHtml = data.professionals.length
     ? data.professionals.map((p) => `<li><strong>${escapeHtml(labelForRole(p.role))}:</strong> ${escapeHtml(peopleName(p.user_id))}</li>`).join('')
     : '<li>—</li>';
@@ -612,12 +627,14 @@ export async function openAppointmentDetails(id, { onEdit } = {}) {
         <p>${[a.needs_uti ? 'UTI' : null, a.needs_hemoba ? 'HEMOBA' : null, a.latex_allergy ? 'Alergia a látex' : null].filter(Boolean).map(escapeHtml).join(' · ') || '—'}</p>
         ${a.special_notes ? `<p class="detail-obs">${escapeHtml(a.special_notes)}</p>` : ''}
         <h3>Profissionais</h3><ul class="plain">${profsHtml}</ul>
+        <h3>Disponibilidade solicitada</h3><ul class="plain">${availHtml}</ul>
         <h3>Equipamentos</h3><ul class="plain">${equipHtml}</ul>
         <h3>Observações</h3><p>${escapeHtml(a.notes || '—')}</p>
         <h3>Arquivos anexados</h3><ul class="plain files">${filesHtml}</ul>
       </div>
       <footer class="modal-footer">
         <button class="btn ghost modal-cancel">Fechar</button>
+        <button class="btn" id="req-avail">🗓️ Solicitar disponibilidade</button>
         <button class="btn primary" id="edit-appt">Editar</button>
         <button class="btn" id="wa-appt">Enviar pelo WhatsApp</button>
       </footer>
@@ -643,9 +660,88 @@ export async function openAppointmentDetails(id, { onEdit } = {}) {
     onEdit?.(id);
   };
 
+  modal.querySelector('#req-avail').onclick = () => {
+    openAvailabilityRequestForm(a, ref.people, () => {
+      close();
+      openAppointmentDetails(id, { onEdit });
+    });
+  };
+
   modal.querySelector('#wa-appt').onclick = async () => {
     const { openWhatsAppPicker } = await import('./whatsapp.js');
     openWhatsAppPicker({ appointment: a, professionals: data.professionals, people: ref.people });
+  };
+}
+
+// Carrega as solicitações de disponibilidade e respostas de um agendamento.
+async function loadAppointmentAvailability(appointmentId) {
+  const { data: requests } = await supabase
+    .from('availability_requests')
+    .select('*')
+    .eq('appointment_id', appointmentId)
+    .order('created_at');
+  const ids = (requests ?? []).map((r) => r.id);
+  let responses = [];
+  if (ids.length) {
+    const { data } = await supabase.from('availability_responses').select('*').in('request_id', ids);
+    responses = data ?? [];
+  }
+  return { requests: requests ?? [], responses };
+}
+
+// Formulário: solicitar disponibilidade a um profissional para este evento.
+function openAvailabilityRequestForm(appt, people, onDone) {
+  const modal = document.createElement('div');
+  modal.className = 'modal-overlay';
+  modal.innerHTML = `
+    <div class="modal small">
+      <header class="modal-header"><h2>Solicitar disponibilidade</h2>
+        <button class="modal-close">&times;</button></header>
+      <form class="modal-body" id="avreq-form">
+        <p class="hint">Peça a um profissional que confirme disponibilidade para este procedimento
+        (${formatDateBR(appt.appointment_date)}, ${hhmm(appt.start_time)}–${hhmm(appt.end_time)}).
+        A mensagem não deve conter dados do paciente.</p>
+        <label class="field"><span>Profissional *</span>
+          <select name="target_user_id" required>
+            <option value="">— selecione —</option>
+            ${people.map((p) => `<option value="${p.id}">${escapeHtml(p.full_name)}</option>`).join('')}
+          </select></label>
+        <label class="field"><span>Mensagem (opcional)</span>
+          <input name="message" placeholder="Ex: Você confirma disponibilidade para esta cirurgia?"></label>
+        <div class="form-error" id="avreq-error"></div>
+        <footer class="modal-footer">
+          <button type="button" class="btn ghost modal-cancel">Cancelar</button>
+          <button type="submit" class="btn primary">Enviar solicitação</button>
+        </footer>
+      </form>
+    </div>`;
+  document.body.appendChild(modal);
+  const close = () => modal.remove();
+  modal.querySelector('.modal-close').onclick = close;
+  modal.querySelector('.modal-cancel').onclick = close;
+  modal.addEventListener('click', (e) => { if (e.target === modal) close(); });
+
+  modal.querySelector('#avreq-form').onsubmit = async (e) => {
+    e.preventDefault();
+    const f = e.target;
+    const errEl = modal.querySelector('#avreq-error');
+    errEl.textContent = '';
+    setLoading(true);
+    const { error } = await supabase.from('availability_requests').insert({
+      surgical_center_id: state.profile.surgical_center_id,
+      appointment_id: appt.id,
+      target_user_id: f.target_user_id.value,
+      request_date: appt.appointment_date,
+      start_time: appt.start_time,
+      end_time: appt.end_time,
+      message: f.message.value.trim() || null,
+      created_by: state.profile.id,
+    });
+    setLoading(false);
+    if (error) { errEl.textContent = error.message; return; }
+    toast('Solicitação de disponibilidade enviada.', 'success');
+    close();
+    onDone?.();
   };
 }
 
