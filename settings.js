@@ -8,6 +8,49 @@
 
 import { supabase, createAuxClient, state, escapeHtml, toast, setLoading, formatDateBR, hhmm } from './supabase-client.js';
 import { PROFESSIONAL_ROLES } from './appointments.js';
+import { sendManual } from './whatsapp.js';
+
+// Link público do app (para enviar no convite).
+const APP_LINK = window.location.origin + window.location.pathname;
+
+// Mostra o resultado do convite com botões de envio por WhatsApp (prioritário)
+// e por e-mail. As credenciais são do próprio usuário convidado.
+function showInviteResult({ nome, email, senha, phone }) {
+  const msg =
+    `Olá, ${nome}! Você foi cadastrado(a) na Agenda do Centro Cirúrgico.\n\n` +
+    `Acesse: ${APP_LINK}\n` +
+    `Login (e-mail): ${email}\n` +
+    `Senha temporária: ${senha}\n\n` +
+    `Recomendamos trocar a senha no primeiro acesso.`;
+  const modal = document.createElement('div');
+  modal.className = 'modal-overlay';
+  modal.innerHTML = `
+    <div class="modal small">
+      <header class="modal-header"><h2>Usuário criado ✅</h2>
+        <button class="modal-close">&times;</button></header>
+      <div class="modal-body">
+        <p class="hint">Envie o acesso para <strong>${escapeHtml(nome)}</strong>. O WhatsApp é o meio prioritário.</p>
+        <div class="cred-box">
+          <div><label>Link</label><p>${escapeHtml(APP_LINK)}</p></div>
+          <div><label>E-mail</label><p>${escapeHtml(email)}</p></div>
+          <div><label>Senha temporária</label><p><strong>${escapeHtml(senha)}</strong></p></div>
+        </div>
+        <div class="wa-actions">
+          <button class="btn primary block" id="inv-wa">📲 Enviar convite por WhatsApp</button>
+          <a class="btn block" id="inv-mail" href="mailto:${encodeURIComponent(email)}?subject=${encodeURIComponent('Acesso — Agenda do Centro Cirúrgico')}&body=${encodeURIComponent(msg)}">✉️ Enviar por e-mail</a>
+        </div>
+        <p class="config-hint">Dica: o WhatsApp abre com a mensagem pronta; é só tocar em enviar. O e-mail abre no seu aplicativo de e-mail.</p>
+      </div>
+    </div>`;
+  document.body.appendChild(modal);
+  const close = () => modal.remove();
+  modal.querySelector('.modal-close').onclick = close;
+  modal.addEventListener('click', (e) => { if (e.target === modal) close(); });
+  modal.querySelector('#inv-wa').onclick = () => {
+    if (!phone) { toast('Este usuário não tem celular cadastrado. Use o e-mail.', 'warn'); return; }
+    sendManual(phone, msg);
+  };
+}
 
 // Gera uma senha temporária legível para novos usuários.
 function gerarSenha() {
@@ -172,6 +215,7 @@ function openUserForm(user, body, userRoles = []) {
     e.preventDefault();
     const err = modal.querySelector('#uf-error'); err.textContent = '';
     const form = e.target;
+    let invite = null;
     const selectedRoles = Array.from(form.querySelectorAll('[name="role"]:checked')).map(x => x.value);
     if (!selectedRoles.length) { err.textContent = 'Selecione ao menos uma função.'; return; }
 
@@ -213,7 +257,8 @@ function openUserForm(user, body, userRoles = []) {
           .insert(selectedRoles.map((role) => ({ user_id: newId, role })));
         if (rErr) throw new Error('Perfil criado, mas falhou ao salvar as funções: ' + rErr.message);
 
-        toast('Usuário criado! Compartilhe o e-mail e a senha temporária: ' + senha, 'success', 9000);
+        toast('Usuário criado com sucesso.', 'success');
+        invite = { nome: form.full_name.value.trim(), email, senha, phone: form.phone_whatsapp.value.trim() };
       } else {
         // Atualiza perfil + funções diretamente (RLS permite ao gestor).
         const { error: upErr } = await supabase.from('profiles').update({
@@ -246,6 +291,7 @@ function openUserForm(user, body, userRoles = []) {
       }
       close();
       renderUsers(body);
+      if (invite) showInviteResult(invite);
     } catch (ex) {
       err.textContent = ex.message;
     } finally {
